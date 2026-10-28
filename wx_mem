@@ -5,65 +5,87 @@
 #include <unistd.h>
 #include <sys/time.h>
 
-// 计算时间毫秒
-long long get_ms() {
+static long long now_ms(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-int main() {
-    while (1) {
-        long long start = get_ms();
-        long total_uss_kb = 0;
+static long long read_private_kb(const char *pid) {
+    char path[64];
+    char line[256];
+    long long total = 0;
+    FILE *f;
+
+    // 优先 smaps_rollup，快很多
+    snprintf(path, sizeof(path), "/proc/%s/smaps_rollup", pid);
+    f = fopen(path, "r");
+    if (!f) {
+        // 老内核回退 smaps
+        snprintf(path, sizeof(path), "/proc/%s/smaps", pid);
+        f = fopen(path, "r");
+        if (!f) return -1;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "Private_Clean:", 14) == 0 ||
+            strncmp(line, "Private_Dirty:", 14) == 0) {
+            total += atoll(line + 14);
+        } else if (strncmp(line, "Private_Hugetlb:", 16) == 0) {
+            total += atoll(line + 16);
+        }
+    }
+
+    fclose(f);
+    return total;
+}
+
+int main(void) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
+    for (;;) {
+        long long start = now_ms();
+        long long total_uss_kb = 0;
         int proc_count = 0;
 
         DIR *dir = opendir("/proc");
-        if (!dir) return 1;
+        if (!dir) {
+            perror("opendir /proc");
+            return 1;
+        }
 
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
-            // 只找纯数字的目录（也就是 PID）
             if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
 
-            char comm_path[256], smaps_path[256];
+            char comm_path[64];
             snprintf(comm_path, sizeof(comm_path), "/proc/%s/comm", entry->d_name);
-            
-            FILE *f = fopen(comm_path, "r");
-            if (!f) continue;
 
-            char comm[256];
-            if (fgets(comm, sizeof(comm), f)) {
-                // 去掉换行符
-                comm[strcspn(comm, "\n")] = 0;
-                // 匹配微信进程
-                if (strstr(comm, "com.tencent.mm")) {
+            FILE *cf = fopen(comm_path, "r");
+            if (!cf) continue;
+
+            char comm[64];
+            if (fgets(comm, sizeof(comm), cf)) {
+                comm[strcspn(comm, "\r\n")] = '\0';
+
+                // comm 可能被截断成 com.tencent.mm:，前缀匹配即可
+                if (strncmp(comm, "com.tencent.mm", 14) == 0) {
                     proc_count++;
-                    snprintf(smaps_path, sizeof(smaps_path), "/proc/%s/smaps", entry->d_name);
-                    
-                    FILE *smaps = fopen(smaps_path, "r");
-                    if (smaps) {
-                        char line[256];
-                        while (fgets(line, sizeof(line), smaps)) {
-                            // 极速匹配，只读 Private_Clean 和 Private_Dirty
-                            if (strncmp(line, "Private_Clean:", 14) == 0) {
-                                total_uss_kb += atoi(line + 14);
-                            } else if (strncmp(line, "Private_Dirty:", 14) == 0) {
-                                total_uss_kb += atoi(line + 14);
-                            }
-                        }
-                        fclose(smaps);
-                    }
+                    long long kb = read_private_kb(entry->d_name);
+                    if (kb >= 0) total_uss_kb += kb;
                 }
             }
-            fclose(f);
+            fclose(cf);
         }
         closedir(dir);
 
-        long long end = get_ms();
-        printf("微信总USS: %.2f MB | 进程数: %d | 耗时: %lld ms\n", total_uss_kb / 1024.0, proc_count, end - start);
+        long long elapsed = now_ms() - start;
+        printf("微信总USS: %.2f MB | 进程数: %d | 耗时: %lld ms\n",
+               total_uss_kb / 1024.0, proc_count, elapsed);
 
-        usleep(200000); // 睡眠 200 毫秒 (200,000 微秒)
+        // 建议 500ms；想激进可改 200000
+        usleep(500000);
     }
+
     return 0;
 }
