@@ -1,0 +1,69 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <sys/time.h>
+
+// 计算时间毫秒
+long long get_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+int main() {
+    while (1) {
+        long long start = get_ms();
+        long total_uss_kb = 0;
+        int proc_count = 0;
+
+        DIR *dir = opendir("/proc");
+        if (!dir) return 1;
+
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            // 只找纯数字的目录（也就是 PID）
+            if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+
+            char comm_path[256], smaps_path[256];
+            snprintf(comm_path, sizeof(comm_path), "/proc/%s/comm", entry->d_name);
+            
+            FILE *f = fopen(comm_path, "r");
+            if (!f) continue;
+
+            char comm[256];
+            if (fgets(comm, sizeof(comm), f)) {
+                // 去掉换行符
+                comm[strcspn(comm, "\n")] = 0;
+                // 匹配微信进程
+                if (strstr(comm, "com.tencent.mm")) {
+                    proc_count++;
+                    snprintf(smaps_path, sizeof(smaps_path), "/proc/%s/smaps", entry->d_name);
+                    
+                    FILE *smaps = fopen(smaps_path, "r");
+                    if (smaps) {
+                        char line[256];
+                        while (fgets(line, sizeof(line), smaps)) {
+                            // 极速匹配，只读 Private_Clean 和 Private_Dirty
+                            if (strncmp(line, "Private_Clean:", 14) == 0) {
+                                total_uss_kb += atoi(line + 14);
+                            } else if (strncmp(line, "Private_Dirty:", 14) == 0) {
+                                total_uss_kb += atoi(line + 14);
+                            }
+                        }
+                        fclose(smaps);
+                    }
+                }
+            }
+            fclose(f);
+        }
+        closedir(dir);
+
+        long long end = get_ms();
+        printf("微信总USS: %.2f MB | 进程数: %d | 耗时: %lld ms\n", total_uss_kb / 1024.0, proc_count, end - start);
+
+        usleep(200000); // 睡眠 200 毫秒 (200,000 微秒)
+    }
+    return 0;
+}
