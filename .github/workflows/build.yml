@@ -1,18 +1,26 @@
 name: Build Android Binary
-on: [push, workflow_dispatch]
+
+on:
+  push:
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Install NDK
-      run: |
-        echo "y" | sudo ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653" > /dev/null
-    - name: Compile C code
-      run: |
-        ${ANDROID_HOME}/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang -O3 -static wx_mem.c -o wx_mem
-    - name: Upload Binary
-      uses: actions/upload-artifact@v4
-      with:
-        name: wx-mem-android
-        path: wx_mem
+      - uses: actions/checkout@v4
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r25c
+
+      - name: Compile arm64
+        run: |
+          "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" \
+            -O2 -Wall -Wextra -s wx_mem.c -o wx_mem
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wx-mem-android-arm64
+          path: wx_mem
